@@ -1,0 +1,71 @@
+# Exclude all other projects and files
+AGENTS.md
+agentic-javika-v1/
+bandwidth-analytics.sh
+claude-ui-poc/
+combined-results.json
+configure_vpn.exp
+connect_vpn.sh
+dk1-onemancompany/
+dk2-cleanup/
+fan-control.sh
+forticlient_vpn_7.4.3.5411_amd64.deb
+go-cli-candidates.md
+gopassui-adm/
+index.html
+install_forticlient_vpn.sh
+javika-admin/
+javika-printer-backup-20260504-005515.tar.gz
+json
+limit-windsurf.sh
+minipostiz-adm/
+mockup-local-platform/
+re
+saml-cert.pem
+saml-private.pem
+saml-public.pem
+supercli-copilot/
+supercli-marketing/
+thermal-control.sh
+todo-app/
+update-wallpaper.sh
+yaml
+
+# Exclude other agents skills
+.agents/skills/dk1-deployments/
+.agents/skills/dk2-deployments/
+.agents/skills/dk2-network-issue/
+.agents/skills/hotify-setup/
+.agents/skills/humanenv-usage/
+.agents/skills/jar-network-bandwidth/
+.agents/skills/linkedin-token-generator/
+.agents/skills/minipostiz-cli-general-skill/
+.agents/skills/paseo-maintainer/
+.agents/skills/postiz-setup/
+.agents/skills/rbm2-trading-dbs/
+# Keep tmux-stt skill
+!.agents/skills/tmux-stt/
+!.agents/skills/tmux-stt/**
+
+# Exclude other directories
+.beads/
+.benchmarks/
+.claude/
+.dirac-symbol-index/
+.playwright-cli/
+.pytest_cache/
+
+# Exclude build artifacts
+tmux-stt
+*.o
+*.a
+
+# Exclude OS files
+.DS_Store
+Thumbs.db
+
+# Exclude IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
