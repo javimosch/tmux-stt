@@ -16,11 +16,13 @@ const (
 
 type Config struct {
 	WakeWord      string            `json:"wake_word"`
+	WakeWordMethod string           `json:"wake_word_method"` // "stt" (current) or "sherpa-kws"
 	Translation   TranslationConfig `json:"translation"`
 	Tmux          TmuxConfig        `json:"tmux"`
 	Audio         AudioConfig       `json:"audio"`
 	STT           STTConfig         `json:"stt"`
 	VAD           VADConfig         `json:"vad"`
+	KWS           KWSConfig         `json:"kws"`           // Keyword spotting configuration
 	ModelsDir     string            `json:"models_dir"`
 	StripWakeWord bool              `json:"strip_wake_word"` // Remove wake word from final output
 }
@@ -57,15 +59,36 @@ type STTConfig struct {
 }
 
 type VADConfig struct {
-	SilenceMs   int `json:"silence_ms"`   // Silence duration in milliseconds
-	SpeechMs    int `json:"speech_ms"`    // Minimum speech duration in milliseconds
-	Threshold   int `json:"threshold"`    // Energy threshold for speech detection
+	Method      string            `json:"method"`       // "energy" (current) or "silero" (sherpa-onnx)
+	SilenceMs   int               `json:"silence_ms"`   // Silence duration in milliseconds
+	SpeechMs    int               `json:"speech_ms"`    // Minimum speech duration in milliseconds
+	Threshold   int               `json:"threshold"`    // Energy threshold for speech detection (energy method)
+	Silero      SileroVADConfig   `json:"silero"`       // Silero VAD configuration
+}
+
+type SileroVADConfig struct {
+	ModelPath           string  `json:"model_path"`
+	Threshold           float32 `json:"threshold"`             // Speech probability threshold (0.0-1.0)
+	MinSilenceDuration  float32 `json:"min_silence_duration"`  // Seconds
+	MinSpeechDuration   float32 `json:"min_speech_duration"`   // Seconds
+	WindowSize          int     `json:"window_size"`           // Samples
+}
+
+type KWSConfig struct {
+	ModelDir     string `json:"model_dir"`     // Directory containing KWS models
+	EncoderPath  string `json:"encoder_path"`  // Path to encoder ONNX model
+	DecoderPath  string `json:"decoder_path"`  // Path to decoder ONNX model
+	JoinerPath   string `json:"joiner_path"`   // Path to joiner ONNX model
+	TokensPath   string `json:"tokens_path"`   // Path to tokens.txt file
+	KeywordsFile string `json:"keywords_file"` // Path to keywords.txt file
 }
 
 func DefaultConfig() *Config {
 	homeDir, _ := os.UserHomeDir()
+	kwsDir := filepath.Join(homeDir, ".local", "share", "tmux-stt", "sherpa-kws")
 	return &Config{
 		WakeWord:      DefaultWakeWord,
+		WakeWordMethod: "stt", // Default to STT-based wake word detection
 		StripWakeWord: true, // Default to stripping wake word from output
 		Translation: TranslationConfig{
 			Enabled:     false,
@@ -95,9 +118,25 @@ func DefaultConfig() *Config {
 		},
 		ModelsDir: filepath.Join(homeDir, ".local", "share", "tmux-stt", "models"),
 		VAD: VADConfig{
-			SilenceMs:   800,  // Wait longer before stopping (was 600ms)
-			SpeechMs:    500,  // Require more speech (was 300ms)
-			Threshold:   300,  // More sensitive (was 500)
+			Method:    "energy", // Default to energy-based VAD
+			SilenceMs: 800,     // Wait longer before stopping (was 600ms)
+			SpeechMs:  500,     // Require more speech (was 300ms)
+			Threshold: 300,     // More sensitive (was 500)
+			Silero: SileroVADConfig{
+				ModelPath:          filepath.Join(homeDir, ".local", "share", "tmux-stt", "models", "silero_vad.onnx"),
+				Threshold:          0.5,  // Speech probability threshold
+				MinSilenceDuration: 0.5,  // 500ms silence
+				MinSpeechDuration:  0.25, // 250ms speech
+				WindowSize:         512,  // Window size in samples
+			},
+		},
+		KWS: KWSConfig{
+			ModelDir:     kwsDir,
+			EncoderPath:  filepath.Join(kwsDir, "encoder-epoch-13-avg-2-chunk-16-left-64.onnx"),
+			DecoderPath:  filepath.Join(kwsDir, "decoder-epoch-13-avg-2-chunk-16-left-64.onnx"),
+			JoinerPath:   filepath.Join(kwsDir, "joiner-epoch-13-avg-2-chunk-16-left-64.onnx"),
+			TokensPath:   filepath.Join(kwsDir, "tokens.txt"),
+			KeywordsFile: filepath.Join(kwsDir, "keywords.txt"),
 		},
 	}
 }
@@ -162,6 +201,8 @@ func (c *Config) Set(key, value string) error {
 	switch key {
 	case "wake-word":
 		c.WakeWord = value
+	case "wake-word-method":
+		c.WakeWordMethod = value
 	case "strip-wake-word":
 		c.StripWakeWord = value == "true"
 	case "stt.language":
@@ -224,6 +265,38 @@ func (c *Config) Set(key, value string) error {
 		var th int
 		fmt.Sscanf(value, "%d", &th)
 		c.VAD.Threshold = th
+	case "vad.method":
+		c.VAD.Method = value
+	case "vad.silero.model":
+		c.VAD.Silero.ModelPath = value
+	case "vad.silero.threshold":
+		var th float32
+		fmt.Sscanf(value, "%f", &th)
+		c.VAD.Silero.Threshold = th
+	case "vad.silero.min-silence-duration":
+		var msd float32
+		fmt.Sscanf(value, "%f", &msd)
+		c.VAD.Silero.MinSilenceDuration = msd
+	case "vad.silero.min-speech-duration":
+		var msd float32
+		fmt.Sscanf(value, "%f", &msd)
+		c.VAD.Silero.MinSpeechDuration = msd
+	case "vad.silero.window-size":
+		var ws int
+		fmt.Sscanf(value, "%d", &ws)
+		c.VAD.Silero.WindowSize = ws
+	case "kws.model-dir":
+		c.KWS.ModelDir = value
+	case "kws.encoder-path":
+		c.KWS.EncoderPath = value
+	case "kws.decoder-path":
+		c.KWS.DecoderPath = value
+	case "kws.joiner-path":
+		c.KWS.JoinerPath = value
+	case "kws.tokens-path":
+		c.KWS.TokensPath = value
+	case "kws.keywords-file":
+		c.KWS.KeywordsFile = value
 	default:
 		return fmt.Errorf("unknown config key: %s", key)
 	}
@@ -234,6 +307,8 @@ func (c *Config) Get(key string) (string, error) {
 	switch key {
 	case "wake-word":
 		return c.WakeWord, nil
+	case "wake-word-method":
+		return c.WakeWordMethod, nil
 	case "strip-wake-word":
 		return fmt.Sprintf("%v", c.StripWakeWord), nil
 	case "stt.language":
@@ -270,6 +345,30 @@ func (c *Config) Get(key string) (string, error) {
 		return fmt.Sprintf("%d", c.VAD.SpeechMs), nil
 	case "vad.threshold":
 		return fmt.Sprintf("%d", c.VAD.Threshold), nil
+	case "vad.method":
+		return c.VAD.Method, nil
+	case "vad.silero.model":
+		return c.VAD.Silero.ModelPath, nil
+	case "vad.silero.threshold":
+		return fmt.Sprintf("%f", c.VAD.Silero.Threshold), nil
+	case "vad.silero.min-silence-duration":
+		return fmt.Sprintf("%f", c.VAD.Silero.MinSilenceDuration), nil
+	case "vad.silero.min-speech-duration":
+		return fmt.Sprintf("%f", c.VAD.Silero.MinSpeechDuration), nil
+	case "vad.silero.window-size":
+		return fmt.Sprintf("%d", c.VAD.Silero.WindowSize), nil
+	case "kws.model-dir":
+		return c.KWS.ModelDir, nil
+	case "kws.encoder-path":
+		return c.KWS.EncoderPath, nil
+	case "kws.decoder-path":
+		return c.KWS.DecoderPath, nil
+	case "kws.joiner-path":
+		return c.KWS.JoinerPath, nil
+	case "kws.tokens-path":
+		return c.KWS.TokensPath, nil
+	case "kws.keywords-file":
+		return c.KWS.KeywordsFile, nil
 	default:
 		return "", fmt.Errorf("unknown config key: %s", key)
 	}

@@ -10,7 +10,7 @@ import (
 
 type WakeWordDetector struct {
 	wakeWord      string
-	vad           *VAD
+	vad           VADInterface
 	sttEngine     STTEngine
 	sampleRate    int
 	chunkSize     int
@@ -84,18 +84,10 @@ func DefaultWakeWordConfig() WakeWordConfig {
 	}
 }
 
-func NewWakeWordDetector(config WakeWordConfig, sttEngine STTEngine) (*WakeWordDetector, error) {
-	vadConfig := VADConfig{
-		SampleRate: config.SampleRate,
-		Channels:   1,
-		SilenceMs:  config.SilenceMs,
-		SpeechMs:   config.MinSpeechMs,
-		Threshold:  config.Threshold,
-	}
-
+func NewWakeWordDetector(config WakeWordConfig, sttEngine STTEngine, vad VADInterface) (*WakeWordDetector, error) {
 	return &WakeWordDetector{
 		wakeWord:    strings.ToLower(config.WakeWord),
-		vad:         NewVAD(vadConfig),
+		vad:         vad,
 		sttEngine:   sttEngine,
 		sampleRate:  config.SampleRate,
 		chunkSize:    config.ChunkSize,
@@ -110,8 +102,8 @@ func (w *WakeWordDetector) SetDetectionCallback(callback func(detected bool, tra
 
 // MonitorAudio continuously monitors audio for wake word
 func (w *WakeWordDetector) MonitorAudio(audioData []int16) bool {
-	// Detect speech segments
-	segments := w.vad.DetectSpeechSegments(audioData, w.chunkSize)
+	// Detect speech segments using VAD interface
+	segments := w.vad.DetectSpeechSegments(audioData)
 	
 	if len(segments) == 0 {
 		return false

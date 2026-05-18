@@ -28,6 +28,7 @@ type Server struct {
 	wakeDetector *wakeword.WakeWordDetector
 	sttAdapter   *wakeword.WhisperBinaryAdapter
 	tmuxClient   *tmux.TmuxClient
+	vad          wakeword.VADInterface
 }
 
 func NewServer(cfg *config.Config, whisperBinaryPath string) (*Server, error) {
@@ -59,7 +60,13 @@ func NewServer(cfg *config.Config, whisperBinaryPath string) (*Server, error) {
 	// Create STT adapter for wake word detector
 	sttAdapter := wakeword.NewWhisperBinaryAdapter(sttEngine)
 
-	// Initialize wake word detector with configurable VAD parameters
+	// Create VAD using factory based on configuration
+	vad, err := wakeword.VADFactory(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize VAD: %w", err)
+	}
+
+	// Initialize wake word detector with VAD interface
 	wakeWordConfig := wakeword.WakeWordConfig{
 		WakeWord:    cfg.WakeWord,
 		SampleRate:  cfg.Audio.SampleRate,
@@ -68,8 +75,9 @@ func NewServer(cfg *config.Config, whisperBinaryPath string) (*Server, error) {
 		MinSpeechMs: cfg.VAD.SpeechMs,
 		Threshold:   int16(cfg.VAD.Threshold),
 	}
-	wakeDetector, err := wakeword.NewWakeWordDetector(wakeWordConfig, sttAdapter)
+	wakeDetector, err := wakeword.NewWakeWordDetector(wakeWordConfig, sttAdapter, vad)
 	if err != nil {
+		vad.Close()
 		return nil, fmt.Errorf("failed to initialize wake word detector: %w", err)
 	}
 
@@ -86,6 +94,7 @@ func NewServer(cfg *config.Config, whisperBinaryPath string) (*Server, error) {
 		wakeDetector: wakeDetector,
 		sttAdapter:   sttAdapter,
 		tmuxClient:   tmuxClient,
+		vad:          vad,
 	}, nil
 }
 
@@ -198,6 +207,11 @@ func (s *Server) Stop() error {
 	
 	if err := s.audio.Close(); err != nil {
 		return fmt.Errorf("failed to close audio: %w", err)
+	}
+
+	// Clean up VAD
+	if s.vad != nil {
+		s.vad.Close()
 	}
 
 	return nil

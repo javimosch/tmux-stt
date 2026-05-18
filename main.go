@@ -401,7 +401,17 @@ func handlePipe(jsonFlag bool) {
 	// Create STT adapter (quiet mode for pipe)
 	sttAdapter := wakeword.NewWhisperBinaryAdapterQuiet(sttEngine)
 
-	// Initialize wake word detector with configurable VAD parameters
+	// Create VAD using factory based on configuration
+	vad, err := wakeword.VADFactory(cfg)
+	if err != nil {
+		if logFileHandle != nil {
+			logFileHandle.WriteString(fmt.Sprintf("Failed to initialize VAD: %v\n", err))
+		}
+		os.Exit(1)
+	}
+	defer vad.Close()
+
+	// Initialize wake word detector with VAD interface
 	wakeWordConfig := wakeword.WakeWordConfig{
 		WakeWord:    cfg.WakeWord,
 		SampleRate:  cfg.Audio.SampleRate,
@@ -410,8 +420,11 @@ func handlePipe(jsonFlag bool) {
 		MinSpeechMs: cfg.VAD.SpeechMs,
 		Threshold:   int16(cfg.VAD.Threshold),
 	}
-	wakeDetector, err := wakeword.NewWakeWordDetector(wakeWordConfig, sttAdapter)
+	wakeDetector, err := wakeword.NewWakeWordDetector(wakeWordConfig, sttAdapter, vad)
 	if err != nil {
+		if logFileHandle != nil {
+			logFileHandle.WriteString(fmt.Sprintf("Failed to initialize wake word detector: %v\n", err))
+		}
 		os.Exit(1)
 	}
 
@@ -809,9 +822,11 @@ func listConfig(cfg *config.Config, jsonFlag bool) {
 	} else {
 		fmt.Println("Current configuration:")
 		fmt.Printf("  Wake word: %s\n", cfg.WakeWord)
+		fmt.Printf("  Wake word method: %s\n", cfg.WakeWordMethod)
 		fmt.Printf("  Strip wake word from output: %v\n", cfg.StripWakeWord)
 		fmt.Printf("  STT Language: %s\n", cfg.STT.Language)
 		fmt.Printf("  STT Model size: %s\n", cfg.STT.ModelSize)
+		fmt.Printf("  VAD Method: %s\n", cfg.VAD.Method)
 		fmt.Printf("  VAD Silence duration: %d ms\n", cfg.VAD.SilenceMs)
 		fmt.Printf("  VAD Min speech duration: %d ms\n", cfg.VAD.SpeechMs)
 		fmt.Printf("  VAD Threshold: %d\n", cfg.VAD.Threshold)
@@ -1095,6 +1110,14 @@ func testWakeWord(jsonFlag bool) {
 		return
 	}
 
+	// Create VAD using factory based on configuration
+	vad, err := wakeword.VADFactory(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize VAD: %v\n", err)
+		return
+	}
+	defer vad.Close()
+
 	// Create wake word detector
 	wakeWordConfig := wakeword.WakeWordConfig{
 		WakeWord:    cfg.WakeWord,
@@ -1106,7 +1129,7 @@ func testWakeWord(jsonFlag bool) {
 	}
 
 	adapter := wakeword.NewWhisperBinaryAdapter(whisper)
-	detector, err := wakeword.NewWakeWordDetector(wakeWordConfig, adapter)
+	detector, err := wakeword.NewWakeWordDetector(wakeWordConfig, adapter, vad)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create wake word detector: %v\n", err)
 		os.Exit(1)
