@@ -9,7 +9,10 @@ A background daemon that listens for a configurable wake word, transcribes voice
 ## Key Features
 
 - **Fully local STT**: Uses Whisper.cpp (tiny/base/small/medium models) with local caching
-- **Wake word detection**: VAD + STT-based wake word detection (no custom models needed)
+- **Dual wake word detection**: STT-based or sherpa-onnx keyword spotting (KWS)
+- **Advanced VAD options**: Energy-based or Silero neural network VAD
+- **Sherpa-ONNX integration**: Silero VAD for better noise robustness, KWS for faster detection
+- **CLI engine management**: Built-in commands for model/keyword/engine control
 - **Configurable**: Wake word, model size, translation, audio settings, VAD parameters
 - **Tmux integration**: Detects active pane and pastes text
 - **Optional translation**: OpenAI-compatible API for language translation
@@ -29,10 +32,17 @@ tmux-stt/
 │   ├── stt/             # Whisper.cpp wrapper
 │   ├── tmux/            # Tmux integration
 │   ├── translate/       # Translation service
-│   └── wakeword/        # Wake word detection (VAD)
+│   └── wakeword/        # Wake word detection
+│       ├── vad.go                # Energy-based VAD
+│       ├── silero_vad.go          # Sherpa-ONNX Silero VAD wrapper
+│       ├── sherpa_kws.go          # Sherpa-ONNX keyword spotting
+│       ├── vad_interface.go        # VAD interface for method switching
+│       └── detector.go            # Wake word detector
 ├── cmd/
 │   └── test-audio/      # Audio testing tool
 ├── scripts/             # Installation scripts
+│   ├── download-silero-vad.sh      # Silero VAD model download
+│   └── download-kws-model.sh       # KWS model download
 └── docs/                # Documentation
 ```
 
@@ -82,10 +92,25 @@ tmux-stt config --set stt.model=base
 # Strip wake word from output
 tmux-stt config --set strip-wake-word=true
 
+# Translation (es to en)
+tmux-stt config --set translation.enabled=true
+tmux-stt config --set translation.source=es
+tmux-stt config --set translation.target=en
+
+# VAD method (energy vs silero)
+tmux-stt config --set vad.method=silero
+
+# Wake word method (stt vs kws)
+tmux-stt config --set wake-word.method=stt
+
 # VAD parameters (voice capture sensitivity)
 tmux-stt config --set vad.threshold=700
-tmux stt config --set vad.silence-ms=1500
+tmux-stt config --set vad.silence-ms=1500
 tmux-stt config --set vad.speech-ms=600
+
+# Silero VAD specific parameters
+tmux-stt config --set vad.silero.model=/path/to/silero_vad.onnx
+tmux-stt config --set vad.silero.threshold=0.5
 ```
 
 ### Important Configuration Parameters
@@ -118,6 +143,32 @@ tmux-stt config --set vad.speech-ms=600
 - `pipe` - Output transcriptions to stdout (for piping)
 - `version` - Show version information
 
+### Engine Management Commands
+
+**Model Management:**
+```bash
+tmux-stt models --download vad-silero  # Download Silero VAD model (629KB)
+tmux-stt models --download kws         # Download KWS models (~32MB)
+tmux-stt models --list                # List available models and installation status
+tmux-stt models --status              # Show engine status and model availability
+```
+
+**Keywords Management:**
+```bash
+tmux-stt keywords --set "hey,computer,toto"  # Set wake words for KWS
+tmux-stt keywords --list                   # List current keywords
+tmux-stt keywords --clear                 # Clear keywords file
+```
+
+**Engine Settings:**
+```bash
+tmux-stt engine --set vad-method=energy   # Use energy-based VAD (Spanish compatible)
+tmux-stt engine --set vad-method=silero   # Use Silero VAD (better noise robustness)
+tmux-stt engine --set wake-method=stt    # Use STT for wake word (Spanish compatible)
+tmux-stt engine --set wake-method=kws    # Use KWS for wake word (English only, faster)
+tmux-stt engine --list                  # List current engine settings
+```
+
 ### Global Flags
 - `--json` - Output in JSON format
 - `--help-json` - Show machine-readable help in JSON format
@@ -135,25 +186,46 @@ tmux-stt config --set vad.speech-ms=600
 
 ## Architecture
 
+**Standard Flow (Energy VAD + STT):**
 ```
-Microphone → PortAudio → VAD (Voice Activity Detection) → Whisper.cpp (Wake Word + STT) → Translation (optional) → Tmux Paste
+Microphone → PortAudio → Energy VAD → Whisper.cpp (Wake Word + STT) → Translation (optional) → Tmux Paste
+```
+
+**Enhanced Flow (Silero VAD + STT):**
+```
+Microphone → PortAudio → Silero VAD (neural network) → Whisper.cpp (Wake Word + STT) → Translation (optional) → Tmux Paste
+```
+
+**Future Flow (Silero VAD + KWS):**
+```
+Microphone → PortAudio → Silero VAD → Sherpa KWS (wake word) → Whisper.cpp (command STT) → Translation (optional) → Tmux Paste
 ```
 
 ## Tech Stack
 
 - **Language**: Go
 - **STT**: Whisper.cpp binary wrapper (no CGO required)
-- **Wake Word**: VAD + STT-based (energy threshold + transcription)
+- **Wake Word**: VAD + STT-based OR Sherpa-ONNX keyword spotting
+- **VAD**: Energy threshold OR Sherpa-ONNX Silero VAD (neural network)
 - **Audio**: PortAudio via CGO
 - **Translation**: OpenAI-compatible API (optional)
+- **External Libraries**: Sherpa-ONNX (Apache 2.0) for advanced VAD/KWS
 
 ## Model Caching
 
-Models are cached in `~/.local/share/tmux-stt/models/`:
-- `ggml-tiny.bin`
-- `ggml-base.bin`
-- `ggl-small.bin`
-- `ggml-medium.bin`
+**Whisper STT Models** (`~/.local/share/tmux-stt/models/`):
+- `ggml-tiny.bin` (~77MB)
+- `ggml-base.bin` (~148MB)
+- `ggml-small.bin` (~75MB)
+- `ggml-medium.bin` (~1.5GB)
+
+**Sherpa-ONNX Models**:
+- `silero_vad.onnx` (629KB) - Silero VAD model
+- KWS models (~32MB) - Keyword spotting models in `~/.local/share/tmux-stt/sherpa-kws/`
+  - `encoder-epoch-13-avg-2-chunk-16-left-64.onnx`
+  - `decoder-epoch-13-avg-2-chunk-16-left-64.onnx`
+  - `joiner-epoch-13-avg-2-chunk-16-left-64.onnx`
+  - `tokens.txt`
 
 Models are only downloaded once and reused for subsequent runs.
 
@@ -167,6 +239,7 @@ sudo apt install portaudio19-dev
 ### Go Dependencies
 ```bash
 go install github.com/gordonklaus/portaudio@latest
+go get github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx
 ```
 
 ### Whisper.cpp
@@ -201,26 +274,43 @@ Use `--help-json` for structured help documentation.
 1. Check audio device: `tmux-stt config --get audio.device`
 2. Adjust VAD parameters: `tmux-stt config --set vad.threshold=500`
 3. Test audio capture: `tmux-stt test --transcribe-only`
+4. Try Silero VAD: `tmux-stt engine --set vad-method=silero`
 
 ### Wake Word Not Detected
 1. Try simpler wake word: `tmux-stt config --set wake-word=hey`
-2. Check STT language matches your speech
-3. Test wake word: `tmux-stt test --wake-word`
+2. Check wake word method: `tmux-stt engine --list`
+3. Ensure STT method for Spanish: `tmux-stt engine --set wake-method=stt`
+4. Test wake word: `tmux-stt test --wake-word`
 
 ### Model Not Working
-1. Check model is cached: `ls ~/.local/share/turmux-stt/models/`
+1. Check model status: `tmux-stt models --status`
 2. Try different model size: `tmux-stt config --set stt.model=base`
-3. Re-download model if corrupted: `rm ~/.local/share/tmux-stt/models/ggml-small.bin`
+3. Re-download corrupted model: `rm ~/.local/share/tmux-stt/models/ggml-small.bin`
+4. Re-download via CLI: `tmux-stt models --download vad-silero`
+
+### Translation Not Working
+1. Check translation enabled: `tmux-stt config --get translation.enabled`
+2. Verify API endpoint: `tmux-stt config --get translation.endpoint`
+3. Test translation: `tmux-stt test --translation`
+
+### Silero VAD Not Working
+1. Check model installed: `tmux-stt models --list`
+2. Download Silero VAD: `tmux-stt models --download vad-silero`
+3. Switch to Silero VAD: `tmux-stt engine --set vad-method=silero`
+4. Fall back to energy VAD: `tmux-stt engine --set vad-method=energy`
 
 ## Current Configuration (Default)
 
 - Wake word: "TOTO"
+- Wake word method: "stt" (STT-based for Spanish compatibility)
 - STT Language: Spanish (es)
 - STT Model: base
 - Strip wake word: true
+- VAD Method: energy (Spanish compatible)
 - VAD Threshold: 700
 - VAD Silence: 1500ms
 - VAD Min speech: 600ms
+- Translation: es → en (optional)
 
 ## Example Usage
 
@@ -253,6 +343,13 @@ tmux-stt start -daemon
 - [x] Agent-friendly CLI (JSON output, semantic exit codes)
 - [x] Voice Activity Detection (VAD) optimization
 - [x] Wake word stripping from output
+- [x] Sherpa-ONNX integration (Silero VAD wrapper)
+- [x] VAD interface for method switching (energy/silero)
+- [x] CLI model management commands
+- [x] CLI keywords management commands
+- [x] CLI engine switching commands
+- [x] Sherpa-ONNX KWS infrastructure
+- [ ] KWS integration into main detection flow
 - [ ] Web UI (configuration interface) - Optional future enhancement
 
 ## License
