@@ -5,6 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -81,6 +83,12 @@ func main() {
 		handlePipe(*jsonFlag)
 	case "version":
 		handleVersion(*jsonFlag)
+	case "models":
+		handleModels(*jsonFlag)
+	case "keywords":
+		handleKeywords(*jsonFlag)
+	case "engine":
+		handleEngine(*jsonFlag)
 	case "help", "--help", "-h":
 		printHelp()
 	default:
@@ -1352,5 +1360,412 @@ func testTmux(jsonFlag bool) {
 	fmt.Println("Check your tmux session for the echo command output")
 	fmt.Println()
 	fmt.Println("🎉 tmux integration test passed!")
+}
+
+func handleModels(jsonFlag bool) {
+	modelsCmd := flag.NewFlagSet("models", flag.ExitOnError)
+	download := modelsCmd.String("download", "", "Download model (vad-silero, kws)")
+	list := modelsCmd.Bool("list", false, "List available models")
+	status := modelsCmd.Bool("status", false, "Show model status")
+	
+	args := flag.Args()
+	if len(args) > 1 {
+		modelsCmd.Parse(args[1:])
+	}
+
+	if *download != "" {
+		downloadModel(*download, jsonFlag)
+	} else if *list {
+		listModels(jsonFlag)
+	} else if *status {
+		modelStatus(jsonFlag)
+	} else {
+		if jsonFlag {
+			outputJSON(map[string]string{
+				"error": "Use --download, --list, or --status",
+			})
+		} else {
+			fmt.Println("Model management commands:")
+			fmt.Println("  tmux-stt models --download vad-silero  # Download Silero VAD model")
+			fmt.Println("  tmux-stt models --download kws         # Download KWS models")
+			fmt.Println("  tmux-stt models --list                # List available models")
+			fmt.Println("  tmux-stt models --status              # Show model status")
+		}
+	}
+}
+
+func handleKeywords(jsonFlag bool) {
+	keywordsCmd := flag.NewFlagSet("keywords", flag.ExitOnError)
+	set := keywordsCmd.String("set", "", "Set keywords (comma-separated)")
+	list := keywordsCmd.Bool("list", false, "List current keywords")
+	clear := keywordsCmd.Bool("clear", false, "Clear keywords")
+	
+	args := flag.Args()
+	if len(args) > 1 {
+		keywordsCmd.Parse(args[1:])
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		outputError(jsonFlag, "Failed to load config", ExitConfigError, err)
+		return
+	}
+
+	if *set != "" {
+		setKeywords(cfg, *set, jsonFlag)
+	} else if *list {
+		listKeywords(cfg, jsonFlag)
+	} else if *clear {
+		clearKeywords(cfg, jsonFlag)
+	} else {
+		if jsonFlag {
+			outputJSON(map[string]string{
+				"error": "Use --set, --list, or --clear",
+			})
+		} else {
+			fmt.Println("Keyword management commands:")
+			fmt.Println("  tmux-stt keywords --set \"hey,computer,toto\"  # Set wake words")
+			fmt.Println("  tmux-stt keywords --list                   # List current keywords")
+			fmt.Println("  tmux-stt keywords --clear                 # Clear keywords")
+		}
+	}
+}
+
+func handleEngine(jsonFlag bool) {
+	engineCmd := flag.NewFlagSet("engine", flag.ExitOnError)
+	set := engineCmd.String("set", "", "Set engine (vad-method:energy|silero, wake-method:stt|kws)")
+	list := engineCmd.Bool("list", false, "List current engine settings")
+	
+	args := flag.Args()
+	if len(args) > 1 {
+		engineCmd.Parse(args[1:])
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		outputError(jsonFlag, "Failed to load config", ExitConfigError, err)
+		return
+	}
+
+	if *set != "" {
+		setEngine(cfg, *set, jsonFlag)
+	} else if *list {
+		listEngine(cfg, jsonFlag)
+	} else {
+		if jsonFlag {
+			outputJSON(map[string]string{
+				"error": "Use --set or --list",
+			})
+		} else {
+			fmt.Println("Engine management commands:")
+			fmt.Println("  tmux-stt engine --set vad-method=silero  # Set VAD method")
+			fmt.Println("  tmux-stt engine --set wake-method=kws    # Set wake word method")
+			fmt.Println("  tmux-stt engine --list                  # List current engine settings")
+		}
+	}
+}
+
+func downloadModel(model string, jsonFlag bool) {
+	var scriptPath string
+	var modelName string
+	
+	switch model {
+	case "vad-silero", "silero", "vad":
+		scriptPath = "./scripts/download-silero-vad.sh"
+		modelName = "Silero VAD"
+	case "kws", "keyword-spotting":
+		scriptPath = "./scripts/download-kws-model.sh"
+		modelName = "Keyword Spotting"
+	default:
+		outputError(jsonFlag, "Unknown model type", ExitInvalidArgument, fmt.Errorf("model: %s", model))
+		return
+	}
+
+	if jsonFlag {
+		outputJSON(map[string]interface{}{
+			"action": "download",
+			"model": model,
+			"script": scriptPath,
+			"status": "running",
+		})
+	} else {
+		fmt.Printf("📦 Downloading %s model...\n", modelName)
+		fmt.Printf("Script: %s\n", scriptPath)
+	}
+
+	// Execute the download script
+	cmd := exec.Command("bash", scriptPath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	
+	if err := cmd.Run(); err != nil {
+		outputError(jsonFlag, "Failed to download model", ExitInternalError, err)
+		return
+	}
+
+	if jsonFlag {
+		outputJSON(map[string]interface{}{
+			"action": "download",
+			"model": model,
+			"status": "completed",
+		})
+	} else {
+		fmt.Printf("✅ %s model downloaded successfully\n", modelName)
+	}
+}
+
+func listModels(jsonFlag bool) {
+	homeDir, _ := os.UserHomeDir()
+	modelsDir := filepath.Join(homeDir, ".local", "share", "tmux-stt")
+	
+	models := []struct {
+		name string
+		path string
+		installed bool
+	}{
+		{"Silero VAD", filepath.Join(modelsDir, "models", "silero_vad.onnx"), false},
+		{"KWS Encoder", filepath.Join(modelsDir, "sherpa-kws", "encoder-epoch-13-avg-2-chunk-16-left-64.onnx"), false},
+		{"KWS Decoder", filepath.Join(modelsDir, "sherpa-kws", "decoder-epoch-13-avg-2-chunk-16-left-64.onnx"), false},
+		{"KWS Joiner", filepath.Join(modelsDir, "sherpa-kws", "joiner-epoch-13-avg-2-chunk-16-left-64.onnx"), false},
+		{"KWS Tokens", filepath.Join(modelsDir, "sherpa-kws", "tokens.txt"), false},
+	}
+
+	for i := range models {
+		if _, err := os.Stat(models[i].path); err == nil {
+			models[i].installed = true
+		}
+	}
+
+	if jsonFlag {
+		outputJSON(models)
+	} else {
+		fmt.Println("Available models:")
+		for _, model := range models {
+			status := "❌ Not installed"
+			if model.installed {
+				status = "✅ Installed"
+			}
+			fmt.Printf("  %s: %s\n", model.name, status)
+		}
+	}
+}
+
+func modelStatus(jsonFlag bool) {
+	cfg, err := config.Load()
+	if err != nil {
+		outputError(jsonFlag, "Failed to load config", ExitConfigError, err)
+		return
+	}
+
+	status := map[string]interface{}{
+		"vad_method": cfg.VAD.Method,
+		"wake_word_method": cfg.WakeWordMethod,
+	}
+
+	// Check model availability
+	homeDir, _ := os.UserHomeDir()
+	sileroPath := filepath.Join(homeDir, ".local", "share", "tmux-stt", "models", "silero_vad.onnx")
+	kwsEncoderPath := filepath.Join(homeDir, ".local", "share", "tmux-stt", "sherpa-kws", "encoder-epoch-13-avg-2-chunk-16-left-64.onnx")
+	
+	status["silero_vad_installed"] = fileExists(sileroPath)
+	status["kws_models_installed"] = fileExists(kwsEncoderPath)
+
+	if jsonFlag {
+		outputJSON(status)
+	} else {
+		fmt.Println("Engine Status:")
+		fmt.Printf("  VAD Method: %s\n", cfg.VAD.Method)
+		fmt.Printf("  Wake Word Method: %s\n", cfg.WakeWordMethod)
+		fmt.Printf("  Silero VAD: %v\n", status["silero_vad_installed"])
+		fmt.Printf("  KWS Models: %v\n", status["kws_models_installed"])
+	}
+}
+
+func setKeywords(cfg *config.Config, keywordsStr string, jsonFlag bool) {
+	keywords := strings.Split(keywordsStr, ",")
+	for i := range keywords {
+		keywords[i] = strings.TrimSpace(keywords[i])
+	}
+
+	// Create keywords file
+	homeDir, _ := os.UserHomeDir()
+	keywordsFile := filepath.Join(homeDir, ".local", "share", "tmux-stt", "sherpa-kws", "keywords.txt")
+	
+	content := ""
+	for i, keyword := range keywords {
+		if i > 0 {
+			content += "\n"
+		}
+		content += fmt.Sprintf("%s @%s", keyword, keyword)
+	}
+
+	// Ensure directory exists
+	keywordsDir := filepath.Dir(keywordsFile)
+	if err := os.MkdirAll(keywordsDir, 0755); err != nil {
+		outputError(jsonFlag, "Failed to create keywords directory", ExitInternalError, err)
+		return
+	}
+
+	if err := os.WriteFile(keywordsFile, []byte(content), 0644); err != nil {
+		outputError(jsonFlag, "Failed to write keywords file", ExitInternalError, err)
+		return
+	}
+
+	// Update config
+	cfg.KWS.KeywordsFile = keywordsFile
+	if err := config.Save(cfg); err != nil {
+		outputError(jsonFlag, "Failed to save config", ExitConfigError, err)
+		return
+	}
+
+	if jsonFlag {
+		outputJSON(map[string]interface{}{
+			"keywords": keywords,
+			"file": keywordsFile,
+			"status": "set",
+		})
+	} else {
+		fmt.Printf("✅ Keywords set: %v\n", keywords)
+		fmt.Printf("📝 Keywords file: %s\n", keywordsFile)
+	}
+}
+
+func listKeywords(cfg *config.Config, jsonFlag bool) {
+	keywordsFile := cfg.KWS.KeywordsFile
+	if keywordsFile == "" {
+		homeDir, _ := os.UserHomeDir()
+		keywordsFile = filepath.Join(homeDir, ".local", "share", "tmux-stt", "sherpa-kws", "keywords.txt")
+	}
+
+	if _, err := os.Stat(keywordsFile); os.IsNotExist(err) {
+		if jsonFlag {
+			outputJSON(map[string]interface{}{
+				"keywords": []string{},
+				"file": keywordsFile,
+				"status": "no_keywords",
+			})
+		} else {
+			fmt.Println("No keywords file found")
+			fmt.Printf("Expected location: %s\n", keywordsFile)
+		}
+		return
+	}
+
+	content, err := os.ReadFile(keywordsFile)
+	if err != nil {
+		outputError(jsonFlag, "Failed to read keywords file", ExitInternalError, err)
+		return
+	}
+
+	// Parse keywords from file
+	lines := strings.Split(string(content), "\n")
+	var keywords []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			// Extract keyword from format "keyword @keyword"
+			parts := strings.Fields(line)
+			if len(parts) >= 1 {
+				keywords = append(keywords, parts[0])
+			}
+		}
+	}
+
+	if jsonFlag {
+		outputJSON(map[string]interface{}{
+			"keywords": keywords,
+			"file": keywordsFile,
+			"count": len(keywords),
+		})
+	} else {
+		fmt.Printf("Current keywords (%d):\n", len(keywords))
+		for _, keyword := range keywords {
+			fmt.Printf("  - %s\n", keyword)
+		}
+	}
+}
+
+func clearKeywords(cfg *config.Config, jsonFlag bool) {
+	keywordsFile := cfg.KWS.KeywordsFile
+	if keywordsFile == "" {
+		homeDir, _ := os.UserHomeDir()
+		keywordsFile = filepath.Join(homeDir, ".local", "share", "tmux-stt", "sherpa-kws", "keywords.txt")
+	}
+
+	if err := os.Remove(keywordsFile); err != nil && !os.IsNotExist(err) {
+		outputError(jsonFlag, "Failed to remove keywords file", ExitInternalError, err)
+		return
+	}
+
+	if jsonFlag {
+		outputJSON(map[string]interface{}{
+			"status": "cleared",
+			"file": keywordsFile,
+		})
+	} else {
+		fmt.Println("✅ Keywords cleared")
+	}
+}
+
+func setEngine(cfg *config.Config, setting string, jsonFlag bool) {
+	parts := strings.SplitN(setting, "=", 2)
+	if len(parts) != 2 {
+		outputError(jsonFlag, "Invalid setting format", ExitInvalidArgument, fmt.Errorf("use: key=value"))
+		return
+	}
+
+	key := strings.TrimSpace(parts[0])
+	value := strings.TrimSpace(parts[1])
+
+	switch key {
+	case "vad-method", "vad":
+		if value != "energy" && value != "silero" {
+			outputError(jsonFlag, "Invalid VAD method", ExitInvalidArgument, fmt.Errorf("must be 'energy' or 'silero'"))
+			return
+		}
+		cfg.VAD.Method = value
+	case "wake-method", "wake-word-method", "wake":
+		if value != "stt" && value != "kws" {
+			outputError(jsonFlag, "Invalid wake word method", ExitInvalidArgument, fmt.Errorf("must be 'stt' or 'kws'"))
+			return
+		}
+		cfg.WakeWordMethod = value
+	default:
+		outputError(jsonFlag, "Unknown setting", ExitInvalidArgument, fmt.Errorf("key: %s", key))
+		return
+	}
+
+	if err := config.Save(cfg); err != nil {
+		outputError(jsonFlag, "Failed to save config", ExitConfigError, err)
+		return
+	}
+
+	if jsonFlag {
+		outputJSON(map[string]interface{}{
+			"setting": key,
+			"value": value,
+			"status": "set",
+		})
+	} else {
+		fmt.Printf("✅ Engine setting updated: %s = %s\n", key, value)
+	}
+}
+
+func listEngine(cfg *config.Config, jsonFlag bool) {
+	if jsonFlag {
+		outputJSON(map[string]interface{}{
+			"vad_method": cfg.VAD.Method,
+			"wake_word_method": cfg.WakeWordMethod,
+		})
+	} else {
+		fmt.Println("Current engine settings:")
+		fmt.Printf("  VAD Method: %s\n", cfg.VAD.Method)
+		fmt.Printf("  Wake Word Method: %s\n", cfg.WakeWordMethod)
+	}
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
